@@ -1,0 +1,88 @@
+name: BCentral Integration tests
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [dev-test]
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Setup environments
+        id: write
+        run: |
+          cd tests/integration_tests/test_packages
+          tests=$(ls -d */ | cut -f1 -d'/' | jq -R -s -c 'split("\n")[:-1]')
+          echo "::set-output name=test::${tests}"
+    outputs:
+      matrix: ${{ steps.write.outputs.test }}
+  push:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test_name: ${{ fromJson(needs.setup.outputs.matrix) }}
+    env:
+      TEST_NAME: "${{ matrix.test_name }}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build Package
+        uses: ballerina-platform/ballerina-action@master
+        env:
+          WORKING_DIR: tests/integration_tests/test_packages/${{ matrix.test_name }}
+          BALLERINA_CENTRAL_ACCESS_TOKEN: ${{ secrets.DEV_TOKEN }}
+          BALLERINA_DEV_CENTRAL: true
+        with:
+          args:
+            pack
+      - name: Push Package
+        uses: ballerina-platform/ballerina-action@master
+        env:
+          WORKING_DIR: tests/integration_tests/test_packages/${{ matrix.test_name }}
+          BALLERINA_CENTRAL_ACCESS_TOKEN: ${{ secrets.DEV_TOKEN }}
+          BALLERINA_DEV_CENTRAL: true
+        with:
+          args:
+            push
+  test:
+    needs: push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Execute tests
+        uses: ballerina-platform/ballerina-action@master
+        env:
+          WORKING_DIR: tests/integration_tests/test_suite
+          BALLERINA_DEV_CENTRAL: true
+        with:
+          args:
+            test
+  cleanup:
+    needs: [push,test]
+    name: clean up
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Cleanup Packages
+      shell: bash
+      run: |
+        pushd tests/integration_tests/test_packages
+          
+        for d in */ ; do
+          pushd $d
+          connectorName="$d"
+          curl -X POST -H "Accept: application/vnd.github.v3+json"  -H "authorization: Bearer ${{ secrets.PAT_TOKEN }}" 'https://api.github.com/repos/wso2-enterprise/ballerina-registry/actions/workflows/delete_package_dev.yml/dispatches' -d '{"ref": "main", "inputs": {"orgName": "anjanasupun","packageName":"'$connectorName'","version":"0.1.0"}}'
+          popd
+        done
+
+        popd
+
+
